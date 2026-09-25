@@ -1,0 +1,23 @@
+name: Remediate
+description: Run the Cursor SDK remediation pipeline against the calling repository.
+outputs:
+  reports-dir:
+    description: Directory containing the JSON and markdown reports
+    value: ${{ steps.pipeline.outputs.reports-dir }}
+runs:
+  using: composite
+  steps:
+    - name: Install pipeline dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+    - id: pipeline
+      name: Scan, triage, fix, and verify
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        TARGET_REPO: ${{ github.workspace }}
+        CURSOR_API_KEY: ${{ env.CURSOR_API_KEY }}
+      run: |
+        npm run remediate
+        echo "reports-dir=${{ github.action_path }}/reports" >> "$GITHUB_OUTPUT"

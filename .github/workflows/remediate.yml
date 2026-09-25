@@ -1,0 +1,83 @@
+name: Remediate caller
+
+on:
+  workflow_call:
+    secrets:
+      CURSOR_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the calling repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install the app
+        run: npm install
+
+      - name: Configure git identity for the pipeline's own commits
+        run: |
+          git config user.name "remediation-bot"
+          git config user.email "remediation-bot@users.noreply.github.com"
+
+      - name: Run remediation pipeline
+        id: remediate
+        uses: jmorgan415/remediation-platform@main
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+
+      - name: Push the remediation branch and open a draft PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPORT_DIR: ${{ steps.remediate.outputs.reports-dir }}
+        run: |
+          if [ -z "$REPORT_DIR" ] || [ ! -d "$REPORT_DIR" ]; then
+            echo "No report was written; the pipeline didn't get far enough to produce one."
+            exit 0
+          fi
+
+          REPORT=$(ls -t "$REPORT_DIR"/*.json 2>/dev/null | head -1)
+          if [ -z "$REPORT" ]; then
+            echo "No report was written; the pipeline didn't get far enough to produce one."
+            exit 0
+          fi
+
+          BRANCH=$(node -e "console.log(require(process.argv[1]).branch ?? '')" "$REPORT")
+          if [ -z "$BRANCH" ]; then
+            echo "No fix branch was created (nothing was fixable this run)."
+            exit 0
+          fi
+
+          AHEAD=$(git rev-list --count main.."$BRANCH")
+          if [ "$AHEAD" -eq "0" ]; then
+            echo "Fix branch has no commits ahead of main; nothing to open a PR for."
+            exit 0
+          fi
+
+          git push origin "$BRANCH"
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --draft \
+            --title "Automated remediation: $BRANCH" \
+            --body "Opened automatically by the remediation pipeline. Each commit is independently reviewable and tagged [auto-fix] or [draft-for-review] in its message -- some resources may show both a fix commit and an immediate revert commit, which means verification caught a fix that didn't actually resolve its finding. See the attached report artifact for full per-resource reasoning."
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: remediation-report
+          path: ${{ steps.remediate.outputs.reports-dir }}
